@@ -1,5 +1,6 @@
 /*
  * Copyright 2018 New Vector Ltd
+ * Copyright 2019 New Vector Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,6 +57,7 @@ import im.vector.R
 import im.vector.VectorApp
 import im.vector.activity.*
 import im.vector.contacts.ContactsManager
+import im.vector.dialogs.BackgroundSyncModeChooserDialog
 import im.vector.dialogs.ExportKeysDialog
 import im.vector.extensions.getFingerprintHumanReadable
 import im.vector.extensions.showPassword
@@ -214,6 +216,13 @@ class VectorSettingsPreferencesFragment : PreferenceFragmentCompat(), SharedPref
         // ? Cause it can be removed
         findPreference(PreferencesManager.SETTINGS_SET_SYNC_DELAY_PREFERENCE_KEY) as EditTextPreference?
     }
+
+    private val mWorkManagerRequestDelayPreference by lazy {
+        // ? Cause it can be removed
+        findPreference(PreferencesManager.SETTINGS_WORK_MANAGER_DELAY_PREFERENCE_KEY) as EditTextPreference?
+    }
+
+
     private val mLabsCategory by lazy {
         findPreference(PreferencesManager.SETTINGS_LABS_PREFERENCE_KEY) as PreferenceCategory
     }
@@ -223,8 +232,12 @@ class VectorSettingsPreferencesFragment : PreferenceFragmentCompat(), SharedPref
     private val backgroundSyncDivider by lazy {
         findPreference(PreferencesManager.SETTINGS_BACKGROUND_SYNC_DIVIDER_PREFERENCE_KEY)
     }
-    private val backgroundSyncPreference by lazy {
-        findPreference(PreferencesManager.SETTINGS_ENABLE_BACKGROUND_SYNC_PREFERENCE_KEY) as SwitchPreference
+//    private val backgroundSyncPreference by lazy {
+//        findPreference(PreferencesManager.SETTINGS_ENABLE_BACKGROUND_SYNC_PREFERENCE_KEY) as SwitchPreference
+//    }
+
+    private val backgroundSyncModePreference by lazy {
+        findPreference(PreferencesManager.SETTINGS_FDROID_BACKGROUND_SYNC_MODE)
     }
     private val mUseRiotCallRingtonePreference by lazy {
         findPreference(PreferencesManager.SETTINGS_CALL_RINGTONE_USE_RIOT_PREFERENCE_KEY) as SwitchPreference
@@ -437,48 +450,7 @@ class VectorSettingsPreferencesFragment : PreferenceFragmentCompat(), SharedPref
             }
         }
 
-        // background sync tuning settings
-        // these settings are useless and hidden if the app is registered to the FCM push service
-        val pushManager = Matrix.getInstance(appContext).pushManager
-        if (pushManager.useFcm() && pushManager.hasRegistrationToken()) {
-            // Hide the section
-            preferenceScreen.removePreference(backgroundSyncDivider)
-            preferenceScreen.removePreference(backgroundSyncCategory)
-        } else {
-            backgroundSyncPreference.let {
-                it.isChecked = pushManager.isBackgroundSyncAllowed
-
-                it.onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, aNewValue ->
-                    val newValue = aNewValue as Boolean
-
-                    if (newValue != pushManager.isBackgroundSyncAllowed) {
-                        pushManager.isBackgroundSyncAllowed = newValue
-                    }
-
-                    displayLoadingView()
-
-                    Matrix.getInstance(activity)?.pushManager?.forceSessionsRegistration(object : ApiCallback<Void> {
-                        override fun onSuccess(info: Void?) {
-                            hideLoadingView()
-                        }
-
-                        override fun onMatrixError(e: MatrixError?) {
-                            hideLoadingView()
-                        }
-
-                        override fun onNetworkError(e: java.lang.Exception?) {
-                            hideLoadingView()
-                        }
-
-                        override fun onUnexpectedError(e: java.lang.Exception?) {
-                            hideLoadingView()
-                        }
-                    })
-
-                    true
-                }
-            }
-        }
+        refreshBackgroundSyncSection(appContext)
 
         // Push target
         refreshPushersList()
@@ -835,6 +807,129 @@ class VectorSettingsPreferencesFragment : PreferenceFragmentCompat(), SharedPref
         }
     }
 
+    private fun refreshBackgroundSyncSection(appContext: Context?) {
+        // background sync tuning settings
+        // these settings are useless and hidden if the app is registered to the FCM push service
+        val pushManager = Matrix.getInstance(appContext).pushManager
+        if (pushManager.useFcm() && pushManager.hasRegistrationToken()) {
+            // Hide the section
+            preferenceScreen.removePreference(backgroundSyncDivider)
+            preferenceScreen.removePreference(backgroundSyncCategory)
+        } else {
+            //This is for fdroid preferences
+
+            mWorkManagerRequestDelayPreference?.summary = context?.getString(R.string.settings_set_workmanager_delay_summary,
+                    secondsToText(PreferencesManager.getWorkManagerSyncIntervalMillis(appContext) / 1000))
+
+            mWorkManagerRequestDelayPreference?.onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, newValue ->
+
+                try {
+                    var newDelay = Integer.parseInt(newValue?.toString() ?: "")
+                    PreferencesManager.setWorkManagerSyncIntervalMillis(context, newDelay * 1000)
+                    activity?.runOnUiThread { refreshBackgroundSyncSection(activity) }
+                } catch (e: Exception) {
+                    Log.e(LOG_TAG, "## refreshBackgroundSyncPrefs : parseInt failed " + e.message, e)
+                }
+                false
+            }
+
+            backgroundSyncModePreference.let {
+                var syncMode: Int = 0
+                var startOnBootPref = findPreference(PreferencesManager.SETTINGS_START_ON_BOOT_PREFERENCE_KEY)
+
+                if (!pushManager.isBackgroundSyncAllowed) {
+                    syncMode = R.string.settings_background_fdroid_sync_mode_disabled
+                    mSyncRequestTimeoutPreference?.isVisible = false
+                    mSyncRequestDelayPreference?.isVisible = false
+                    mWorkManagerRequestDelayPreference?.isVisible = false
+                    startOnBootPref?.isVisible = false
+                } else if (pushManager.idFdroidSyncModeOptimizedForRealTime()) {
+                    syncMode = R.string.settings_background_fdroid_sync_mode_real_time
+                    mSyncRequestTimeoutPreference?.isVisible = true
+                    mSyncRequestDelayPreference?.isVisible = true
+                    mWorkManagerRequestDelayPreference?.isVisible = false
+                    startOnBootPref?.isVisible = true
+                } else {
+                    syncMode = R.string.settings_background_fdroid_sync_mode_battery
+                    mSyncRequestTimeoutPreference?.isVisible = false
+                    mSyncRequestDelayPreference?.isVisible = false
+                    mWorkManagerRequestDelayPreference?.isVisible = true
+                    startOnBootPref?.isVisible = false
+                }
+                it.summary = context?.getString(syncMode)
+
+                it.onPreferenceClickListener = Preference.OnPreferenceClickListener {
+                    val initialMode = PreferencesManager.getFdroidSyncBackgroundMode(context)
+                    val dialogFragment = BackgroundSyncModeChooserDialog.newInstance(
+                            initialMode,
+                            object : BackgroundSyncModeChooserDialog.InteractionListener {
+                                override fun onOptionSelected(mode: String) {
+                                    //option has change, need to act
+                                    val revertMode = PreferencesManager.getFdroidSyncBackgroundMode(context)
+                                    when (mode) {
+                                        PreferencesManager.FDROID_BACKGROUND_SYNC_MODE_FOR_REALTIME -> {
+                                            // Important, Battery optim white listing is needed in this mode;
+                                            // Even if using foreground service with foreground notif, it stops to work
+                                            // in doze mode for certain devices :/
+                                            pushManager.setFdroidSyncModeOptimizedForRealTime();
+                                        }
+                                        PreferencesManager.FDROID_BACKGROUND_SYNC_MODE_FOR_BATTERY -> {
+                                            pushManager.setFdroidSyncModeOptimizedForBattery();
+                                        }
+                                        PreferencesManager.FDROID_BACKGROUND_SYNC_MODE_DISABLED -> {
+                                            pushManager.setFdroidSyncModeDisabled()
+                                        }
+                                    }
+                                    refreshBackgroundSyncSection(context)
+
+//                                    displayLoadingView()
+//
+//                                    pushManager.forceSessionsRegistration(object : ApiCallback<Void> {
+//                                        override fun onSuccess(info: Void?) {
+//                                            hideLoadingView()
+//                                        }
+//
+//                                        override fun onMatrixError(e: MatrixError?) {
+//                                            revertPreviousState()
+//                                        }
+//
+//                                        override fun onNetworkError(e: java.lang.Exception?) {
+//                                            revertPreviousState()
+//                                        }
+//
+//                                        override fun onUnexpectedError(e: java.lang.Exception?) {
+//                                            revertPreviousState()
+//                                        }
+//
+//                                        private fun revertPreviousState() {
+//                                            Toast.makeText(context, R.string.settings_background_sync_update_error, Toast.LENGTH_LONG).show()
+//                                            when (revertMode) {
+//                                                PreferencesManager.FDROID_BACKGROUND_SYNC_MODE_FOR_REALTIME -> {
+//                                                    pushManager.setFdroidSyncModeOptimizedForRealTime();
+//                                                }
+//                                                PreferencesManager.FDROID_BACKGROUND_SYNC_MODE_FOR_BATTERY -> {
+//                                                    pushManager.setFdroidSyncModeOptimizedForBattery();
+//                                                }
+//                                                PreferencesManager.FDROID_BACKGROUND_SYNC_MODE_DISABLED -> {
+//                                                    pushManager.setFdroidSyncModeDisabled()
+//                                                }
+//
+//                                            }
+//                                            hideLoadingView()
+//                                        }
+//                                    })
+                                }
+                            }
+                    )
+                    activity?.supportFragmentManager?.let {
+                        dialogFragment.show(it, "syncDialog")
+                    }
+                    true
+                }
+            }
+        }
+    }
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         val view = super.onCreateView(inflater, container, savedInstanceState)
 
@@ -1014,11 +1109,13 @@ class VectorSettingsPreferencesFragment : PreferenceFragmentCompat(), SharedPref
                 if (preference is SwitchPreference) {
                     when (preferenceKey) {
                         PreferencesManager.SETTINGS_ENABLE_THIS_DEVICE_PREFERENCE_KEY ->
-                            preference.isChecked = pushManager?.areDeviceNotificationsAllowed() ?: true
+                            preference.isChecked = pushManager?.areDeviceNotificationsAllowed()
+                                    ?: true
 
                         PreferencesManager.SETTINGS_TURN_SCREEN_ON_PREFERENCE_KEY -> {
                             preference.isChecked = pushManager?.isScreenTurnedOn ?: false
-                            preference.isEnabled = pushManager?.areDeviceNotificationsAllowed() ?: true
+                            preference.isEnabled = pushManager?.areDeviceNotificationsAllowed()
+                                    ?: true
                         }
                         else -> {
                             preference.isEnabled = null != rules && isConnected
@@ -1034,7 +1131,8 @@ class VectorSettingsPreferencesFragment : PreferenceFragmentCompat(), SharedPref
         val areNotificationAllowed = rules?.findDefaultRule(BingRule.RULE_ID_DISABLE_ALL)?.isEnabled == true
 
         mNotificationPrivacyPreference.isEnabled = !areNotificationAllowed
-                && (pushManager?.areDeviceNotificationsAllowed() ?: true) && pushManager?.useFcm() ?: true
+                && (pushManager?.areDeviceNotificationsAllowed()
+                ?: true) && pushManager?.useFcm() ?: true
     }
 
     //==============================================================================================================

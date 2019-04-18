@@ -304,7 +304,7 @@ public class EventStreamService extends Service {
 
         if (mForegroundNotificationState == ForegroundNotificationState.PRESTART) {
             //The service has been started in foreground, we must display a notif ASAP
-            Notification notification = NotificationUtils.INSTANCE.buildForegroundServiceNotification(this, R.string.notification_sync_init);
+            Notification notification = NotificationUtils.INSTANCE.buildForegroundServiceNotification(this, R.string.notification_sync_init, false);
             startForeground(NotificationUtils.NOTIFICATION_ID_FOREGROUND_SERVICE, notification);
             //And switch now to NONE
             mForegroundNotificationState = ForegroundNotificationState.NONE;
@@ -879,10 +879,10 @@ public class EventStreamService extends Service {
                 }
                 break;
             case INITIAL_SYNCING:
-                notification = NotificationUtils.INSTANCE.buildForegroundServiceNotification(this, R.string.notification_sync_in_progress);
+                notification = NotificationUtils.INSTANCE.buildForegroundServiceNotification(this, R.string.notification_sync_in_progress, false);
                 break;
             case LISTENING_FOR_EVENTS:
-                notification = NotificationUtils.INSTANCE.buildForegroundServiceNotification(this, R.string.notification_listening_for_events);
+                notification = NotificationUtils.INSTANCE.buildForegroundServiceNotification(this, R.string.notification_listening_for_events, false);
                 break;
             case INCOMING_CALL:
             case CALL_IN_PROGRESS:
